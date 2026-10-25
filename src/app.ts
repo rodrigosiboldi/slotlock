@@ -139,6 +139,7 @@ export function createApp(deps: Deps) {
     Scalar(async () => ({
       url: "/openapi.json",
       pageTitle: "Slotlock API reference",
+      favicon: "/favicon.svg",
       theme: "deepSpace",
       darkMode: true,
       defaultHttpClient: { targetKey: "js", clientKey: "fetch" },
