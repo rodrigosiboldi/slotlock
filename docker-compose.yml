@@ -1,0 +1,36 @@
+# Everything local: Postgres 17, migrations, and the API on http://localhost:3000
+#   docker compose up --build
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: slotlock
+      POSTGRES_PASSWORD: slotlock
+      POSTGRES_DB: slotlock
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slotlock"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    command: ["bun", "scripts/migrate.ts"]
+    environment:
+      DATABASE_URL: postgres://slotlock:slotlock@db:5432/slotlock
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    ports: ["3000:3000"]
+    environment:
+      DATABASE_URL: postgres://slotlock:slotlock@db:5432/slotlock
+      APP_SECRET: local-development-secret-change-me-0123456789
+      PUBLIC_URL: http://localhost:3000
+      NODE_ENV: development
+    depends_on:
+      migrate:
+        condition: service_completed_successfully

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    services:
+      # A real server for the concurrency test; the rest of the suite runs on PGlite.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: slotlock
+          POSTGRES_PASSWORD: slotlock
+          POSTGRES_DB: slotlock
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U slotlock"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun test --coverage
+        env:
+          TEST_DATABASE_URL: postgres://slotlock:slotlock@localhost:5432/slotlock
+      - run: bun run build
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t slotlock .

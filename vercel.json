@@ -1,0 +1,19 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "hono",
+  "bunVersion": "1.x",
+  "regions": ["fra1"],
+  "installCommand": "bun install --frozen-lockfile",
+  "buildCommand": "bun run build",
+  "crons": [
+    {
+      "path": "/internal/cron/daily",
+      "schedule": "0 4 * * *"
+    }
+  ],
+  "functions": {
+    "src/index.ts": {
+      "includeFiles": "public/**"
+    }
+  }
+}

@@ -1,0 +1,188 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@source "./";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Design tokens. Colors are Radix Colors scales (slate, lime, grass, tomato, sky); the semantic
+ * names follow shadcn/ui so its components pick them up. Components never use raw colors.
+ */
+:root {
+  --radius: 0.75rem;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* slate (light) */
+  --background: #fcfcfd;
+  --foreground: #1c2024;
+  --card: #f9f9fb;
+  --card-foreground: #1c2024;
+  --popover: #fcfcfd;
+  --popover-foreground: #1c2024;
+  --primary: #bdee63;
+  --primary-foreground: #263209;
+  --secondary: #f0f0f3;
+  --secondary-foreground: #1c2024;
+  --muted: #f0f0f3;
+  --muted-foreground: #60646c;
+  --accent: #e8e8ec;
+  --accent-foreground: #1c2024;
+  --destructive: #e54d2e;
+  --border: #d9d9e0;
+  --input: #d9d9e0;
+  --ring: #5c7c2f;
+  --brand: #5c7c2f;
+  --success: #46a758;
+  --success-text: #2a7e3b;
+  --success-subtle: #e9f6e9;
+  --danger: #e54d2e;
+  --danger-text: #d13415;
+  --danger-subtle: #feebe7;
+  --info-text: #00749e;
+  --grid: #e8e8ec;
+}
+
+.dark {
+  /* slate (dark) */
+  --background: #111113;
+  --foreground: #edeef0;
+  --card: #18191b;
+  --card-foreground: #edeef0;
+  --popover: #18191b;
+  --popover-foreground: #edeef0;
+  /* lime (dark): the colour of a padel ball */
+  --primary: #bdee63;
+  --primary-foreground: #11130c;
+  --secondary: #212225;
+  --secondary-foreground: #edeef0;
+  --muted: #212225;
+  --muted-foreground: #b0b4ba;
+  --accent: #272a2d;
+  --accent-foreground: #edeef0;
+  --destructive: #e54d2e;
+  --border: #2e3135;
+  --input: #363a3f;
+  --ring: #bdee63;
+  --brand: #bde56c;
+  /* grass / tomato / sky (dark) */
+  --success: #46a758;
+  --success-text: #71d083;
+  --success-subtle: #1b2a1e;
+  --danger: #e54d2e;
+  --danger-text: #ff977d;
+  --danger-subtle: #391714;
+  --info-text: #75c7f0;
+  --grid: #212225;
+}
+
+@theme inline {
+  --font-sans: "General Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --ease-out: var(--ease-out);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand: var(--brand);
+  --color-success: var(--success);
+  --color-success-text: var(--success-text);
+  --color-success-subtle: var(--success-subtle);
+  --color-danger: var(--danger);
+  --color-danger-text: var(--danger-text);
+  --color-danger-subtle: var(--danger-subtle);
+  --color-info-text: var(--info-text);
+  --color-grid: var(--grid);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 5rem;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat every component's own timing */
+      animation-duration: 1ms !important;
+      /* biome-ignore lint/complexity/noImportantStyles: same as above */
+      transition-duration: 1ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  /* A faint court-line grid behind the hero. */
+  .court-grid {
+    background-image:
+      linear-gradient(to right, var(--grid) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 70% 60% at 30% 0%, black 30%, transparent 75%);
+  }
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes winner-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 70%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 14px transparent;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

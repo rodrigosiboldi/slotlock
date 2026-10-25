@@ -1,0 +1,31 @@
+# dependencies
+node_modules
+
+# build output (bun run build; Vercel builds it on deploy)
+public/
+out
+dist
+*.tgz
+coverage
+*.lcov
+*.tsbuildinfo
+
+# local environment: never commit secrets
+.env
+.env.*
+!.env.example
+.vercel
+
+# logs and caches
+logs
+*.log
+.cache
+.eslintcache
+
+# editors and OS
+.idea
+.vscode
+.DS_Store
+
+# local scratch
+*.tmp.ts

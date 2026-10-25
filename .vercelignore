@@ -1,0 +1,7 @@
+# Never ship local credentials; production values live in Vercel's environment.
+.env
+.env.*
+# Not needed to build or run.
+test
+coverage
+*.tmp.ts
