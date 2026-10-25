@@ -23,11 +23,17 @@ export function registerSystemRoutes(
       responses: {
         200: {
           description: "Alive.",
-          content: json(z.object({ status: z.literal("ok"), version: z.string().openapi({ example: "4f2a91c" }) })),
+          content: json(
+            z.object({
+              status: z.literal("ok"),
+              version: z.string().openapi({ example: "4f2a91c" }),
+              runtime: z.string().openapi({ example: "bun 1.4.4" }),
+            }),
+          ),
         },
       },
     }),
-    (c) => c.json({ status: "ok" as const, version: deps.config.version }, 200),
+    (c) => c.json({ status: "ok" as const, version: deps.config.version, runtime: `bun ${Bun.version}` }, 200),
   );
 
   app.openapi(

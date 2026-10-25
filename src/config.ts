@@ -19,7 +19,8 @@ const EnvSchema = z.object({
   DEMO_ENABLED: booleanish.default(true),
   /** Trust X-Forwarded-For from the platform's proxy (true on Vercel). */
   TRUST_PROXY: booleanish.optional(),
-  DB_MAX_CONNECTIONS: z.coerce.number().int().min(1).max(100).default(10),
+  /** Per process. Requests share connections; only transactions hold one of their own. */
+  DB_MAX_CONNECTIONS: z.coerce.number().int().min(1).max(100).default(5),
   VERCEL: z.string().optional(),
   VERCEL_PROJECT_PRODUCTION_URL: z.string().optional(),
   VERCEL_URL: z.string().optional(),

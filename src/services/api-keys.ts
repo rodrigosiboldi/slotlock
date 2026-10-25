@@ -7,6 +7,7 @@ import { randomToken, sha256Hex, uuidv7 } from "../lib/crypto";
 const KEY_PREFIX: Record<ApiKeyKind, string> = { secret: "sl_sk_", publishable: "sl_pk_" };
 const SHOWN_PREFIX_LENGTH = 12;
 const LAST_USED_RESOLUTION_MS = 60_000;
+const lastUsedWrites = new Map<string, number>();
 
 export interface IssuedKey {
   id: string;
@@ -57,9 +58,12 @@ export async function authenticateKey(
     .limit(1);
   if (!row) return null;
 
-  // Recording use on every request would turn reads into writes; once a minute is plenty.
+  // Recording use on every request would turn reads into writes on one hot row; once a minute
+  // per process is plenty (a burst of requests all read the same stale value, so remember here).
   const now = new Date(deps.clock.now().epochMilliseconds);
-  if (!row.lastUsedAt || now.getTime() - row.lastUsedAt.getTime() > LAST_USED_RESOLUTION_MS) {
+  const lastWrite = Math.max(row.lastUsedAt?.getTime() ?? 0, lastUsedWrites.get(row.id) ?? 0);
+  if (now.getTime() - lastWrite > LAST_USED_RESOLUTION_MS) {
+    lastUsedWrites.set(row.id, now.getTime());
     deps.background(deps.db.update(apiKeys).set({ lastUsedAt: now }).where(eq(apiKeys.id, row.id)));
   }
   return {

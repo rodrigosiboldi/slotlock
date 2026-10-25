@@ -58,3 +58,22 @@ export const SQLSTATE = {
   checkViolation: "23514",
   exclusionViolation: "23P01",
 } as const;
+
+/**
+ * Errors that guarantee nothing was committed: the connection was never granted (too many
+ * connection attempts), the server ran out of memory, or the transaction was rolled back for
+ * serialization or a deadlock. Retrying them is safe; any other error is final.
+ */
+const TRANSIENT = new Set(["53300", "53200", "40001", "40P01"]);
+
+export async function retryTransient<T>(work: () => Promise<T>, attempts = 4): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await work();
+    } catch (error) {
+      const code = sqlState(error)?.code;
+      if (attempt >= attempts || !code || !TRANSIENT.has(code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 60 * 2 ** attempt + Math.random() * 120));
+    }
+  }
+}

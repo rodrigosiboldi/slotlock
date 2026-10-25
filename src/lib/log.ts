@@ -37,13 +37,18 @@ export function createLogger(options: { level?: LogLevel; base?: LogFields; writ
   };
 }
 
-function serialize(value: unknown): unknown {
+function serialize(value: unknown, depth = 0): unknown {
   if (value instanceof Error) {
+    const extra = value as Error & { code?: unknown; errno?: unknown; detail?: unknown };
     return {
       name: value.name,
-      message: value.message,
-      ...(value.stack ? { stack: value.stack.split("\n").slice(0, 8).join("\n") } : {}),
-      ...("code" in value ? { code: value.code } : {}),
+      // Wrappers (Drizzle's "Failed query: …") put the SQL first; the cause says what went wrong.
+      message: value.message.slice(0, 300),
+      ...(value.stack && depth === 0 ? { stack: value.stack.split("\n").slice(0, 6).join("\n") } : {}),
+      ...(extra.code !== undefined ? { code: extra.code } : {}),
+      ...(extra.errno !== undefined ? { errno: extra.errno } : {}),
+      ...(extra.detail !== undefined ? { detail: extra.detail } : {}),
+      ...(value.cause !== undefined && depth < 3 ? { cause: serialize(value.cause, depth + 1) } : {}),
     };
   }
   return value;

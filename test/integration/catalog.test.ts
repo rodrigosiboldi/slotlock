@@ -138,7 +138,7 @@ describe("GET /v1/availability", () => {
 
 describe("system", () => {
   test("health, readiness and the OpenAPI document", async () => {
-    expect(await body(await h.request("/healthz"))).toEqual({ status: "ok", version: "test" });
+    expect(await body(await h.request("/healthz"))).toMatchObject({ status: "ok", version: "test" });
     expect(await body(await h.request("/readyz"))).toMatchObject({
       status: "ready",
       database: { noOverlapConstraint: true },

@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, gte, lt, or } from "drizzle-orm";
 import type { AuthContext, Deps } from "../context";
-import { type Executor, SQLSTATE, sqlState } from "../db/client";
+import { type Executor, retryTransient, SQLSTATE, sqlState } from "../db/client";
 import { bookings, openingHours, resources, serviceResources, timeOff } from "../db/schema";
 import { blockedInterval, checkStart, type StartProblem } from "../domain/availability";
 import { uuidv7 } from "../lib/crypto";
@@ -67,7 +67,9 @@ export async function createBooking(
   let taken = false;
   for (const resourceId of candidates) {
     try {
-      const booking = await deps.db.transaction((tx) => insertBooking(tx, deps, auth, service, resourceId, input));
+      const booking = await retryTransient(() =>
+        deps.db.transaction((tx) => insertBooking(tx, deps, auth, service, resourceId, input)),
+      );
       deps.metrics.bookings.inc({ outcome: "created" });
       return booking;
     } catch (error) {
