@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -25,6 +26,9 @@ import {
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 const updatedAt = () => timestamp("updated_at", { withTimezone: true }).notNull().defaultNow();
 const instant = (name: string) => timestamp(name, { withTimezone: true });
+
+/** Postgres' 64-bit transaction id; read as text. */
+const xid8 = customType<{ data: string; driverData: string }>({ dataType: () => "xid8" });
 
 export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey(),
@@ -254,9 +258,14 @@ export const events = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     type: text("type").notNull(),
     data: jsonb("data").$type<Record<string, unknown>>().notNull(),
+    /**
+     * The writing transaction. Readers page by (tx_id, id) and only past the oldest transaction
+     * still running, so an event whose transaction commits late can't land behind a cursor.
+     */
+    txId: xid8("tx_id").notNull().default(sql`pg_current_xact_id()`),
     createdAt: createdAt(),
   },
-  (t) => [index("events_organization_idx").on(t.organizationId, t.id)],
+  (t) => [index("events_feed_idx").on(t.organizationId, t.txId, t.id)],
 );
 
 export const DELIVERY_STATUSES = ["pending", "succeeded", "failed"] as const;

@@ -1,6 +1,7 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import type { AppEnv, Deps } from "../../context";
-import { EVENT_TYPES, listEvents } from "../../services/events";
+import { problems } from "../../lib/problem";
+import { decodeFeedCursor, EVENT_TYPES, encodeFeedCursor, eventsAfter } from "../../services/events";
 import { createEndpoint, deleteEndpoint, listDeliveries, listEndpoints } from "../../services/webhooks";
 import { requireScope } from "../middleware";
 import {
@@ -9,19 +10,17 @@ import {
   EventSchema,
   IdempotencyHeader,
   IdParam,
-  ListMeta,
   PageQuery,
   problemSpec,
   WebhookEndpointCreatedSchema,
   WebhookEndpointInputSchema,
   WebhookEndpointSchema,
 } from "../schemas";
-import { decodeCursor, encodeCursor, serializeDelivery, serializeEndpoint, serializeEvent } from "../serialize";
+import { serializeDelivery, serializeEndpoint, serializeEvent } from "../serialize";
 
 const security = [{ ApiKey: [] }];
 const json = <T>(schema: T) => ({ "application/json": { schema } });
 const ENDPOINT_ID = "0199c3e5-3c4d-7e5f-8a6b-7c8d9e0f1a23";
-const isId = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f-]{36}$/.test(value);
 
 export function registerWebhookRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): void {
   app.openapi(
@@ -128,30 +127,45 @@ export function registerWebhookRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): voi
       tags: ["Events"],
       summary: "Event feed",
       description:
-        "Every change, oldest first, from the same outbox webhooks are sent from. Poll it with the cursor if " +
-        "you cannot receive webhooks: you will not miss an event.",
+        "Every change, oldest first, from the same outbox webhooks are sent from. Poll it with `nextCursor` " +
+        "if you cannot receive webhooks: it is always returned, even on the last page, and no event is ever " +
+        "skipped — events appear in the order their transactions became safe to read, not merely by id.",
       security,
       middleware: [requireScope("bookings:read")] as const,
       request: { query: z.object({ ...PageQuery, type: z.enum(EVENT_TYPES).optional() }) },
       responses: {
         200: {
           description: "A page of events.",
-          content: json(z.object({ ...ListMeta, data: z.array(EventSchema) }).openapi("EventList")),
+          content: json(
+            z
+              .object({
+                object: z.literal("list"),
+                data: z.array(EventSchema),
+                nextCursor: z
+                  .string()
+                  .nullable()
+                  .openapi({ description: "Resume from here next time; null only before the first event exists." }),
+                hasMore: z.boolean().openapi({ description: "Whether another page is ready right now." }),
+              })
+              .openapi("EventList"),
+          ),
         },
         ...commonErrors,
       },
     }),
     async (c) => {
       const { limit, cursor, type } = c.req.valid("query");
-      const after = decodeCursor(cursor, isId);
-      const rows = await listEvents(deps.db, c.var.auth.organizationId, { limit: limit + 1, after, type });
+      const after = cursor ? decodeFeedCursor(cursor) : null;
+      if (cursor && !after) throw problems.validation([{ path: "cursor", message: "Invalid or expired cursor." }]);
+      const rows = await eventsAfter(deps.db, c.var.auth.organizationId, after, { limit: limit + 1, type });
       const page = rows.slice(0, limit);
-      const last = page.at(-1);
+      const last = page.at(-1)?.cursor ?? after;
       return c.json(
         {
           object: "list" as const,
           data: page.map(serializeEvent),
-          nextCursor: rows.length > limit && last ? encodeCursor(last.id) : null,
+          nextCursor: last ? encodeFeedCursor(last) : null,
+          hasMore: rows.length > limit,
         },
         200,
       );

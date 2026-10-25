@@ -38,11 +38,17 @@ import {
   TimeOffInputSchema,
   TimeOffSchema,
 } from "../schemas";
-import { decodeCursor, encodeCursor, serializeResource, serializeService, serializeTimeOff } from "../serialize";
+import {
+  decodeCursor,
+  encodeCursor,
+  isUuid,
+  serializeResource,
+  serializeService,
+  serializeTimeOff,
+} from "../serialize";
 
 const security = [{ ApiKey: [] }];
 const json = <T>(schema: T) => ({ "application/json": { schema } });
-const isId = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f-]{36}$/.test(value);
 
 export function registerCatalogRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): void {
   // ---------- organization ----------
@@ -96,7 +102,7 @@ export function registerCatalogRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): voi
     }),
     async (c) => {
       const { limit, cursor } = c.req.valid("query");
-      const after = decodeCursor(cursor, isId);
+      const after = decodeCursor(cursor, isUuid);
       const rows = await listResources(deps.db, c.var.auth.organizationId, {
         limit: limit + 1,
         ...(after ? { after } : {}),
@@ -311,7 +317,7 @@ export function registerCatalogRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): voi
     }),
     async (c) => {
       const { limit, cursor } = c.req.valid("query");
-      const after = decodeCursor(cursor, isId);
+      const after = decodeCursor(cursor, isUuid);
       const rows = await listServices(deps.db, c.var.auth.organizationId, {
         limit: limit + 1,
         ...(after ? { after } : {}),

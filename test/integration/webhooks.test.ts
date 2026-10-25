@@ -114,8 +114,8 @@ describe("webhooks", () => {
     expect(h.outbound).toHaveLength(1);
   });
 
-  test("in production, private and plain-http targets are refused", async () => {
-    const production = await createHarness({ env: "production" });
+  test("on a real deployment, private and plain-http targets are refused", async () => {
+    const production = await createHarness({ env: "production", publicUrl: "https://api.example.com" });
     try {
       const prodClub = await seedClub(production);
       for (const url of [
@@ -123,6 +123,9 @@ describe("webhooks", () => {
         "https://10.0.0.7/hook",
         "https://localhost/hook",
         "https://[::1]/hook",
+        "https://[::ffff:169.254.169.254]/hook",
+        "https://[64:ff9b::a9fe:a9fe]/hook",
+        "https://[fe90::1]/hook",
       ]) {
         const response = await production.request("/v1/webhook-endpoints", {
           method: "POST",
@@ -138,6 +141,15 @@ describe("webhooks", () => {
 
   test("private address detection", () => {
     for (const address of [
+      "::ffff:a9fe:a9fe",
+      "64:ff9b::a9fe:a9fe",
+      "64:ff9b::10.0.0.1",
+      "2002:0a00:0001::1",
+      "fe90::1",
+      "febf::1",
+      "ff02::1",
+      "198.18.0.1",
+      "192.0.0.8",
       "10.1.2.3",
       "127.0.0.1",
       "169.254.169.254",

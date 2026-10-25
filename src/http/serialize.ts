@@ -97,6 +97,10 @@ export function serializeEvent(event: DomainEvent) {
   };
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const isUuid = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
+
 /** Opaque pagination cursors: base64url JSON, so their shape can change without breaking clients. */
 export function encodeCursor(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");

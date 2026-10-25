@@ -109,7 +109,9 @@ export function idempotency(deps: Pick<Deps, "db" | "clock">): MiddlewareHandler
     }
     const organizationId = c.var.auth.organizationId;
     const body = await c.req.text();
-    const fingerprint = sha256Hex(`${c.req.method} ${c.req.path}\n${body}`);
+    // The key id is part of the fingerprint: a replay must come from the same API key, so a
+    // publishable key can never read back what a secret key stored under a guessable key.
+    const fingerprint = sha256Hex(`${c.var.auth.keyId}\n${c.req.method} ${c.req.path}\n${body}`);
     const now = () => new Date(deps.clock.now().epochMilliseconds);
 
     const claim = await claimKey(deps.db, { organizationId, key, fingerprint, now: now() });

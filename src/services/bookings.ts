@@ -63,20 +63,32 @@ export async function createBooking(
     );
   }
 
-  let lastProblem: unknown = null;
+  let rejection: unknown = null;
+  let taken = false;
   for (const resourceId of candidates) {
     try {
       const booking = await deps.db.transaction((tx) => insertBooking(tx, deps, auth, service, resourceId, input));
       deps.metrics.bookings.inc({ outcome: "created" });
       return booking;
     } catch (error) {
-      if (sqlState(error)?.code !== SQLSTATE.exclusionViolation && !isSlotProblem(error)) throw error;
-      lastProblem = error;
+      if (sqlState(error)?.code === SQLSTATE.exclusionViolation) {
+        taken = true;
+      } else if (isSlotProblem(error)) {
+        // Notice and booking-window rules don't depend on the resource: no point trying the next one.
+        if (resourceIndependent(error)) throw error;
+        rejection = error;
+      } else {
+        throw error;
+      }
     }
   }
 
+  // Nobody holds the slot and the rules refused it everywhere: say why, not "busy".
+  if (!taken && rejection) {
+    deps.metrics.bookings.inc({ outcome: "rejected" });
+    throw rejection;
+  }
   deps.metrics.bookings.inc({ outcome: "conflict" });
-  if (isSlotProblem(lastProblem) && candidates.length === 1) throw lastProblem;
   throw problems.conflict(
     "slot-unavailable",
     "Slot unavailable",
@@ -353,6 +365,11 @@ async function timezoneOf(db: Executor, resourceId: string): Promise<string> {
 
 function isSlotProblem(error: unknown): boolean {
   return error instanceof Error && "slug" in error && error.slug === "slot-not-bookable";
+}
+
+function resourceIndependent(error: unknown): boolean {
+  const reason = (error as { extensions?: { reason?: string } }).extensions?.reason;
+  return reason === "too_soon" || reason === "too_far_ahead";
 }
 
 function toBooking(row: BookingRow, timezone: string): Booking {

@@ -161,14 +161,16 @@ bun run verify                                 # typecheck + lint + tests
 bun run smoke https://slotlock-ashy.vercel.app # end-to-end check of a deployment
 ```
 
-- **Unit:** the availability engine, including both daylight-saving transitions, windows that cross
-  midnight, buffers, notice, booking windows and customer versus staff rules.
+- **Unit:** the availability engine — both daylight-saving transitions, windows that cross midnight,
+  buffers, notice, booking windows, customer versus staff rules, a grid that doesn't depend on the range
+  asked for, and a property check that every slot offered is accepted when booked.
 - **Integration:** the real app on a real Postgres engine ([PGlite](https://pglite.dev), in-process,
   with the real migrations): 100 simultaneous bookings for one slot, buffers, idempotent replays and
   key reuse, rate limits sliding over time, scopes, tenant isolation, cursor pagination, time off,
   webhook signatures, retries until they give up, the outbox staying empty for rolled-back bookings,
   and SSRF rules.
-- **Real Postgres:** 200 requests over 20 connections against Postgres 17 in CI.
+- **Real Postgres** (CI runs Postgres 17): 200 requests over 20 connections for one slot, and two
+  interleaved transactions to show the event feed never skips one that commits late.
 
 ## Deployment
 
@@ -191,14 +193,19 @@ and graceful shutdown.
   time.
 - **No Redis.** Rate limits and idempotency live in Postgres: one less moving part, shared by every
   serverless instance, transactional when it matters.
-- **Polling the outbox for SSE.** Postgres `LISTEN/NOTIFY` doesn't work through Neon's pooler; reading
-  new events by UUIDv7 cursor works everywhere and keeps the booking path unaware of listeners.
+- **A feed that can't skip events.** Event ids are minted before commit, so "everything after the last
+  id" can miss an event whose transaction commits late. Each event records its transaction id (`xid8`);
+  readers page by `(tx_id, id)` and only past the oldest transaction still running. The SSE stream and
+  `GET /v1/events` both read this way, and a test against a real server interleaves two transactions to
+  prove it. (Polling instead of `LISTEN/NOTIFY`, which doesn't pass Neon's pooler.)
 
 ## Limits
 
 - On serverless, due webhook retries are swept after every booking change and by the daily cron; the
   container runs the dispatcher every 5 s. For a tight retry schedule on serverless, a queue (Vercel
   Queues, QStash) would take over that job.
+- Webhook targets are resolved and checked before every delivery, but `fetch` resolves the name again,
+  so a DNS-rebinding race remains possible; pinning the connection to the checked address would close it.
 - Metrics are per instance on serverless; scrape the container for fleet-wide numbers.
 - Resources hold one booking at a time; capacity (a class with 12 places) would need a different
   constraint or a counter row.

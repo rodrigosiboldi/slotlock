@@ -13,9 +13,11 @@ import { migrate } from "drizzle-orm/bun-sql/migrator";
 import { createApp } from "../../src/app";
 import type { Deps } from "../../src/context";
 import { connectDatabase, type DatabaseHandle } from "../../src/db/client";
+import { uuidv7 } from "../../src/lib/crypto";
 import { createLogger } from "../../src/lib/log";
 import { createMetrics } from "../../src/lib/metrics";
 import { createSecrets } from "../../src/lib/secrets";
+import { eventsAfter, latestCursor } from "../../src/services/events";
 import { booking, type Club, seedClub, TEST_SECRET, testConfig } from "../support/harness";
 
 const url = process.env.TEST_DATABASE_URL;
@@ -70,5 +72,26 @@ describe.skipIf(!url)("on a real Postgres server", () => {
     );
     const count = Array.isArray(rows) ? rows[0]?.count : (rows as { rows: { count: string }[] }).rows[0]?.count;
     expect(count).toBe("1");
+  }, 60_000);
+
+  test("the event feed never skips an event whose transaction commits late", async () => {
+    const start = await latestCursor(handle.db, club.organizationId);
+    const raw = new SQL({ url: url as string, max: 2 });
+    const insert = (db: SQL, n: number) =>
+      db`insert into events (id, organization_id, type, data)
+         values (${uuidv7()}, ${club.organizationId}, 'booking.created', ${JSON.stringify({ n })}::jsonb)`;
+    // T1 writes first but commits last; T2 writes and commits in between.
+    const t1 = await raw.reserve();
+    await t1`begin`;
+    await insert(t1, 1);
+    await insert(raw, 2);
+    const read = async () =>
+      (await eventsAfter(handle.db, club.organizationId, start, { limit: 10 })).map((event) => event.data.n);
+    // A naive "id > cursor" reader would return [2] here and then never see 1.
+    expect(await read()).toEqual([]);
+    await t1`commit`;
+    t1.release();
+    expect(await read()).toEqual([1, 2]);
+    await raw.close();
   }, 60_000);
 });

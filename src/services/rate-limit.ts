@@ -27,6 +27,8 @@ export const POLICIES = {
   race: { name: "race", limit: 250, windowSeconds: 120 },
   /** Starting demo races: per client IP. */
   raceStarts: { name: "race-starts", limit: 6, windowSeconds: 60 },
+  /** Opening the demo's live activity feed: per client IP (each stream polls for four minutes). */
+  demoFeeds: { name: "demo-feeds", limit: 20, windowSeconds: 600 },
 } satisfies Record<string, RatePolicy>;
 
 /**
@@ -56,14 +58,41 @@ export async function hit(db: Executor, policy: RatePolicy, subject: string, now
     })
     .returning({ count: rateLimits.count, previousCount: rateLimits.previousCount });
 
-  const count = row?.count ?? 1;
-  const previous = row?.previousCount ?? 0;
-  const elapsed = (nowMs - windowStart) / windowMs;
-  const estimate = previous * (1 - elapsed) + count;
+  const state = { count: row?.count ?? 1, previousCount: row?.previousCount ?? 0, windowStartMs: windowStart };
+  const estimate = estimateAt(policy, state, nowMs);
+  const allowed = estimate <= policy.limit;
   return {
-    allowed: estimate <= policy.limit,
+    allowed,
     limit: policy.limit,
     remaining: Math.max(0, Math.floor(policy.limit - estimate)),
-    resetSeconds: Math.max(1, Math.ceil((windowStart + windowMs - nowMs) / 1000)),
+    resetSeconds: allowed
+      ? Math.max(1, Math.ceil((windowStart + windowMs - nowMs) / 1000))
+      : secondsUntilAllowed(policy, state, nowMs),
   };
+}
+
+export interface WindowState {
+  count: number;
+  previousCount: number;
+  windowStartMs: number;
+}
+
+/** The sliding estimate at a moment, given the counters as they stand (no further requests). */
+function estimateAt(policy: RatePolicy, state: WindowState, atMs: number): number {
+  const windowMs = policy.windowSeconds * 1000;
+  const offset = atMs - state.windowStartMs;
+  if (offset < windowMs) return state.previousCount * (1 - offset / windowMs) + state.count;
+  if (offset < 2 * windowMs) return state.count * (1 - (offset - windowMs) / windowMs);
+  return 0;
+}
+
+/**
+ * How long until one more request would be allowed. The end of the current window is not enough:
+ * right after it the previous window still counts in full, then fades out.
+ */
+export function secondsUntilAllowed(policy: RatePolicy, state: WindowState, nowMs: number): number {
+  for (let seconds = 1; seconds <= 2 * policy.windowSeconds; seconds++) {
+    if (estimateAt(policy, state, nowMs + seconds * 1000) + 1 <= policy.limit) return seconds;
+  }
+  return 2 * policy.windowSeconds;
 }

@@ -44,7 +44,7 @@ export async function createEndpoint(
   organizationId: string,
   input: { url: string; events: string[]; description?: string | undefined },
 ): Promise<{ endpoint: WebhookEndpoint; secret: string }> {
-  assertDeliverableUrl(input.url, deps.config.env !== "production");
+  assertDeliverableUrl(input.url, isLocalDeployment(deps.config));
   // Standard Webhooks secret format: "whsec_" + base64 of the raw HMAC key.
   const secret = `whsec_${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64")}`;
   const [row] = await deps.db
@@ -235,7 +235,7 @@ async function attempt(
   const started = performance.now();
   const elapsed = () => Math.round(performance.now() - started);
   try {
-    await assertResolvesPublic(endpoint.url, deps.config.env !== "production");
+    await assertResolvesPublic(endpoint.url, isLocalDeployment(deps.config));
     const secret = await deps.secrets.decrypt(endpoint.secretCiphertext);
     const timestamp = Math.floor(deps.clock.now().epochMilliseconds / 1000);
     const body = JSON.stringify({ type: event.type, timestamp: event.createdAt.toISOString(), data: event.data });
@@ -263,6 +263,14 @@ async function attempt(
 }
 
 // ---------- SSRF protection ----------
+
+/**
+ * Local targets (http://localhost…) are allowed only when the API itself runs on localhost,
+ * so the strict rules hold on every real deployment whatever NODE_ENV says.
+ */
+export function isLocalDeployment(config: Pick<Deps["config"], "publicUrl">): boolean {
+  return isLocalHostname(new URL(config.publicUrl).hostname);
+}
 
 /** Webhooks go to the public internet only: no private, loopback or link-local targets. */
 export function assertDeliverableUrl(raw: string, allowLocal: boolean): void {
@@ -307,23 +315,66 @@ function isLocalHostname(hostname: string): boolean {
   return host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "::1";
 }
 
+/**
+ * True for anything that is not a public unicast address: private, loopback, link-local,
+ * shared, reserved and multicast ranges, plus IPv6 forms that embed or translate to an IPv4
+ * address (mapped, compatible, NAT64, 6to4), which are judged by that IPv4 address.
+ */
 export function isPrivateAddress(address: string): boolean {
-  if (isIP(address) === 4) {
-    const [a = 0, b = 0] = address.split(".").map(Number);
-    return (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      a >= 224
-    );
+  const kind = isIP(address);
+  if (kind === 4) return isPrivateV4(address.split(".").map(Number));
+  if (kind !== 6) return true;
+  const h = expandV6(address);
+  if (!h) return true;
+  const word = (i: number) => h[i] ?? 0;
+  const embedded = (i: number) => [word(i) >> 8, word(i) & 255, word(i + 1) >> 8, word(i + 1) & 255];
+  const zeros = (from: number, to: number) => h.slice(from, to).every((x) => x === 0);
+  if (zeros(0, 8)) return true; // ::
+  if (zeros(0, 7) && word(7) === 1) return true; // ::1
+  if (zeros(0, 5) && word(5) === 0xffff) return isPrivateV4(embedded(6)); // ::ffff:a.b.c.d, however written
+  if (zeros(0, 6)) return isPrivateV4(embedded(6)); // ::a.b.c.d (deprecated)
+  if (word(0) === 0x64 && word(1) === 0xff9b && zeros(2, 6)) return isPrivateV4(embedded(6)); // NAT64
+  if (word(0) === 0x64 && word(1) === 0xff9b && word(2) === 1) return true; // local-use NAT64
+  if (word(0) === 0x2002) return isPrivateV4(embedded(1)); // 6to4
+  if ((word(0) & 0xfe00) === 0xfc00) return true; // unique local
+  if ((word(0) & 0xffc0) === 0xfe80 || (word(0) & 0xffc0) === 0xfec0) return true; // link- and site-local
+  if ((word(0) & 0xff00) === 0xff00) return true; // multicast
+  if (word(0) === 0x2001 && word(1) === 0x0db8) return true; // documentation
+  if (word(0) === 0x0100 && zeros(1, 4)) return true; // discard-only
+  return false;
+}
+
+function isPrivateV4([a = 0, b = 0, c = 0]: number[]): boolean {
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && c === 0) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
+  );
+}
+
+/** Eight 16-bit words of an IPv6 address (with "::" and an IPv4 tail expanded), or null. */
+function expandV6(address: string): number[] | null {
+  let text = (address.toLowerCase().split("%")[0] ?? "").trim();
+  const tail = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (tail) {
+    const [, a = 0, b = 0, c = 0, d = 0] = tail.map(Number);
+    text = `${text.slice(0, tail.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
   }
-  const v6 = address.toLowerCase();
-  if (v6.startsWith("::ffff:")) return isPrivateAddress(v6.slice(7));
-  return v6 === "::" || v6 === "::1" || v6.startsWith("fc") || v6.startsWith("fd") || v6.startsWith("fe80");
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const rest = halves.length === 2 ? (halves[1] ? halves[1].split(":") : []) : null;
+  const parts = rest === null ? head : [...head, ...Array(8 - head.length - rest.length).fill("0"), ...rest];
+  if (parts.length !== 8) return null;
+  const words = parts.map((part) => (/^[0-9a-f]{1,4}$/.test(part) ? Number.parseInt(part, 16) : Number.NaN));
+  return words.some(Number.isNaN) ? null : words;
 }
 
 function stripBrackets(hostname: string): string {

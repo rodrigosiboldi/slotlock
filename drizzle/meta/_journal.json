@@ -15,6 +15,13 @@
       "when": 1792965200773,
       "tag": "0001_booking_guarantees",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792970633793,
+      "tag": "0002_event_feed_order",
+      "breakpoints": true
     }
   ]
 }

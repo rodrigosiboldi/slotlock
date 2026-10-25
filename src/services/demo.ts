@@ -14,6 +14,7 @@ import {
 import { blockedInterval } from "../domain/availability";
 import { hmacSha256, sha256Hex, uuidv7 } from "../lib/crypto";
 import { createResource, createService } from "./catalog";
+import { eventsAfter, type FeedCursor, latestCursor } from "./events";
 import { verify as verifySignature } from "./webhooks";
 
 export const DEMO_SLUG = "demo-padel-club";
@@ -301,7 +302,11 @@ export async function startRace(deps: Deps): Promise<Race> {
 
 // ---------- webhook receiver ----------
 
-/** The demo's own webhook receiver: verifies like a real one would, and keeps what it got. */
+/**
+ * The demo's own webhook receiver, verifying like a real one would. Only deliveries with a valid
+ * signature and a well-formed payload are kept: everything it keeps is shown to every visitor,
+ * so anything else is refused without a trace.
+ */
 export async function receiveWebhook(
   deps: Deps,
   headers: { id: string | null; timestamp: string | null; signature: string | null },
@@ -309,23 +314,32 @@ export async function receiveWebhook(
 ): Promise<boolean> {
   const { webhookSecret } = await demoCredentials(deps.config.appSecret);
   const nowSeconds = Math.floor(deps.clock.now().epochMilliseconds / 1000);
-  const valid = await verifySignature(webhookSecret, headers, body, nowSeconds);
-  let payload: { type?: string } & Record<string, unknown> = {};
+  if (!(await verifySignature(webhookSecret, headers, body, nowSeconds))) return false;
+  let payload: unknown;
   try {
     payload = JSON.parse(body);
   } catch {
-    payload = { raw: body.slice(0, 500) };
+    return false;
   }
+  if (!isDelivery(payload)) return false;
   await deps.db.insert(demoInbox).values({
     id: uuidv7(),
     webhookId: headers.id ?? "missing",
-    eventType: typeof payload.type === "string" ? payload.type : "unknown",
-    signatureValid: valid,
+    eventType: payload.type,
+    signatureValid: true,
     payload,
     // The application clock, like the events it is compared with on the page.
     receivedAt: new Date(deps.clock.now().epochMilliseconds),
   });
-  return valid;
+  return true;
+}
+
+function isDelivery(
+  value: unknown,
+): value is { type: string; data: Record<string, unknown> } & Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { type?: unknown; data?: unknown };
+  return typeof candidate.type === "string" && typeof candidate.data === "object" && candidate.data !== null;
 }
 
 export interface FeedItem {
@@ -337,19 +351,22 @@ export interface FeedItem {
   signatureValid?: boolean;
 }
 
+export interface DemoFeedCursor {
+  event: FeedCursor | null;
+  inbox: string;
+}
+
 /** Recent demo activity after a cursor, for the landing page's live log. */
-export async function feedSince(deps: Deps, after: { event: string; inbox: string }): Promise<FeedItem[]> {
+export async function feedSince(
+  deps: Deps,
+  after: DemoFeedCursor,
+): Promise<{ items: FeedItem[]; next: DemoFeedCursor }> {
   const demo = await ensureDemo(deps);
   const [eventRows, inboxRows] = await Promise.all([
-    deps.db
-      .select()
-      .from(events)
-      .where(and(eq(events.organizationId, demo.organizationId), gt(events.id, after.event)))
-      .orderBy(events.id)
-      .limit(50),
+    eventsAfter(deps.db, demo.organizationId, after.event, { limit: 50 }),
     deps.db.select().from(demoInbox).where(gt(demoInbox.id, after.inbox)).orderBy(demoInbox.id).limit(50),
   ]);
-  return [
+  const items: FeedItem[] = [
     ...eventRows.map((row) => ({
       kind: "event" as const,
       id: row.id,
@@ -365,22 +382,23 @@ export async function feedSince(deps: Deps, after: { event: string; inbox: strin
       data: row.payload,
       signatureValid: row.signatureValid,
     })),
-  ].sort((a, b) => a.id.localeCompare(b.id));
+  ].sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+  return {
+    items,
+    next: {
+      event: eventRows.at(-1)?.cursor ?? after.event,
+      inbox: inboxRows.at(-1)?.id ?? after.inbox,
+    },
+  };
 }
 
-export async function latestFeedCursor(deps: Deps): Promise<{ event: string; inbox: string }> {
+export async function latestFeedCursor(deps: Deps): Promise<DemoFeedCursor> {
   const demo = await ensureDemo(deps);
-  const zero = "00000000-0000-0000-0000-000000000000";
-  const [[event], [inbox]] = await Promise.all([
-    deps.db
-      .select({ id: events.id })
-      .from(events)
-      .where(eq(events.organizationId, demo.organizationId))
-      .orderBy(desc(events.id))
-      .limit(1),
+  const [event, [inbox]] = await Promise.all([
+    latestCursor(deps.db, demo.organizationId),
     deps.db.select({ id: demoInbox.id }).from(demoInbox).orderBy(desc(demoInbox.id)).limit(1),
   ]);
-  return { event: event?.id ?? zero, inbox: inbox?.id ?? zero };
+  return { event, inbox: inbox?.id ?? "00000000-0000-0000-0000-000000000000" };
 }
 
 /** The auth context the demo acts with when it calls services directly. */

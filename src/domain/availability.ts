@@ -42,9 +42,14 @@ export interface Schedule {
 export const MAX_RANGE_DAYS = 31;
 
 /**
- * Every bookable slot starting on a local date in [from, to] (inclusive): inside opening hours,
- * on the slot grid, outside every busy interval once buffers are added, and within the
- * minimum-notice and maximum-advance limits.
+ * Every bookable slot starting on a local date in [from, to] (inclusive): on the slot grid,
+ * fitting inside opening hours, outside every busy interval once buffers are added, and within
+ * the minimum-notice and maximum-advance limits.
+ *
+ * The grid is anchored at the start of each opening-hours entry (08:00, 16:00, ...), so the start
+ * times offered never depend on the range asked for. A slot may run past the end of its entry into
+ * a touching one (Monday 22:00–24:00 then Tuesday 00:00–02:00), so fit is checked against the
+ * merged opening windows, which include the day after `to`.
  *
  * `busy` holds the blocked intervals of confirmed bookings (buffers included) and time off.
  */
@@ -58,29 +63,42 @@ export function computeSlots(
   const earliest = now.add({ minutes: service.minNoticeMinutes });
   const latest = latestStart(schedule, now);
   const blocked = mergeIntervals(busy);
+  const windows = openingWindows(schedule, range.from.subtract({ days: 1 }), range.to.add({ days: 1 }));
   const lastStartDate = range.to.add({ days: 1 });
   const slots: Interval[] = [];
-  let cursor = 0; // index into `blocked`; candidate starts only move forward
+  // Candidate starts only move forward, so both lookups advance a cursor instead of searching.
+  let windowCursor = 0;
+  let busyCursor = 0;
 
-  // Windows that started the day before `from` can still hold slots starting on `from`.
-  for (const window of openingWindows(schedule, range.from.subtract({ days: 1 }), range.to)) {
+  for (const entry of openingEntries(schedule, range.from, range.to)) {
     for (
-      let start = window.start;
-      Temporal.Instant.compare(start.add({ minutes: service.durationMinutes }), window.end) <= 0;
+      let start = entry.start;
+      Temporal.Instant.compare(start, entry.end) < 0;
       start = start.add({ minutes: service.slotIntervalMinutes })
     ) {
       const localDate = start.toZonedDateTimeISO(schedule.timezone).toPlainDate();
-      if (Temporal.PlainDate.compare(localDate, range.from) < 0) continue;
       if (Temporal.PlainDate.compare(localDate, lastStartDate) >= 0) break;
-      if (Temporal.Instant.compare(start, earliest) < 0) continue;
       if (Temporal.Instant.compare(start, latest) > 0) break;
+      if (Temporal.Instant.compare(start, earliest) < 0) continue;
 
-      const slot = { start, end: start.add({ minutes: service.durationMinutes }) };
-      const guard = blockedInterval(slot, service);
-      while (cursor < blocked.length && Temporal.Instant.compare((blocked[cursor] as Interval).end, guard.start) <= 0) {
-        cursor++;
+      while (
+        windowCursor < windows.length &&
+        Temporal.Instant.compare((windows[windowCursor] as Interval).end, start) <= 0
+      ) {
+        windowCursor++;
       }
-      const next = blocked[cursor];
+      const window = windows[windowCursor];
+      const slot = { start, end: start.add({ minutes: service.durationMinutes }) };
+      if (!window || !contains(window, slot)) break; // later starts of this entry end even later
+
+      const guard = blockedInterval(slot, service);
+      while (
+        busyCursor < blocked.length &&
+        Temporal.Instant.compare((blocked[busyCursor] as Interval).end, guard.start) <= 0
+      ) {
+        busyCursor++;
+      }
+      const next = blocked[busyCursor];
       if (next && Temporal.Instant.compare(next.start, guard.end) < 0) continue;
       slots.push(slot);
     }
@@ -95,6 +113,8 @@ export type StartProblem = "outside_opening_hours" | "off_grid" | "too_soon" | "
  * notice, maximum advance) apply to publishable keys only; staff with a secret key may book any
  * time the resource is open. Overlap with other bookings is deliberately not checked here: the
  * database's exclusion constraint is the single judge of that.
+ *
+ * Uses exactly the rules computeSlots uses, so every slot it offers is accepted here.
  */
 export function checkStart(
   schedule: Schedule,
@@ -106,11 +126,17 @@ export function checkStart(
   const { service } = schedule;
   const slot = { start, end: start.add({ minutes: service.durationMinutes }) };
   const localDate = start.toZonedDateTimeISO(schedule.timezone).toPlainDate();
-  const window = openingWindows(schedule, localDate.subtract({ days: 1 }), localDate).find((w) => contains(w, slot));
-  if (!window) return "outside_opening_hours";
+  const entry = openingEntries(schedule, localDate, localDate).find(
+    (candidate) =>
+      Temporal.Instant.compare(candidate.start, start) <= 0 && Temporal.Instant.compare(start, candidate.end) < 0,
+  );
+  const fits = openingWindows(schedule, localDate.subtract({ days: 1 }), localDate.add({ days: 1 })).some((window) =>
+    contains(window, slot),
+  );
+  if (!entry || !fits) return "outside_opening_hours";
 
   if (options.customerRules) {
-    const minutesFromOpening = window.start.until(start).total({ unit: "minutes" });
+    const minutesFromOpening = entry.start.until(start).total({ unit: "minutes" });
     if (!Number.isInteger(minutesFromOpening / service.slotIntervalMinutes)) return "off_grid";
     if (Temporal.Instant.compare(start, now.add({ minutes: service.minNoticeMinutes })) < 0) return "too_soon";
     if (Temporal.Instant.compare(start, latestStart(schedule, now)) > 0) return "too_far_ahead";
@@ -131,25 +157,34 @@ export function blockedInterval(
   };
 }
 
+/** Each opening-hours entry as an absolute interval, for every local date in [from, to], in order. */
+export function openingEntries(
+  schedule: Pick<Schedule, "timezone" | "openingHours">,
+  from: Temporal.PlainDate,
+  to: Temporal.PlainDate,
+): Interval[] {
+  const entries: Interval[] = [];
+  for (let date = from; Temporal.PlainDate.compare(date, to) <= 0; date = date.add({ days: 1 })) {
+    for (const hours of schedule.openingHours) {
+      if (hours.weekday !== date.dayOfWeek) continue;
+      const start = wallClock(date, hours.opensAt, schedule.timezone);
+      const end = wallClock(date, hours.closesAt, schedule.timezone);
+      if (Temporal.Instant.compare(start, end) < 0) entries.push({ start, end });
+    }
+  }
+  return entries.sort((a, b) => Temporal.Instant.compare(a.start, b.start));
+}
+
 /**
- * Opening hours as absolute intervals for every local date in [from, to]. Windows that touch
- * (Monday 22:00–24:00 and Tuesday 00:00–02:00) merge into one, so a booking can cross midnight.
+ * Opening hours as merged windows: entries that touch (Monday 22:00–24:00 and Tuesday 00:00–02:00)
+ * become one window, so a booking can cross midnight.
  */
 export function openingWindows(
   schedule: Pick<Schedule, "timezone" | "openingHours">,
   from: Temporal.PlainDate,
   to: Temporal.PlainDate,
 ): Interval[] {
-  const windows: Interval[] = [];
-  for (let date = from; Temporal.PlainDate.compare(date, to) <= 0; date = date.add({ days: 1 })) {
-    for (const hours of schedule.openingHours) {
-      if (hours.weekday !== date.dayOfWeek) continue;
-      const start = wallClock(date, hours.opensAt, schedule.timezone);
-      const end = wallClock(date, hours.closesAt, schedule.timezone);
-      if (Temporal.Instant.compare(start, end) < 0) windows.push({ start, end });
-    }
-  }
-  return mergeIntervals(windows);
+  return mergeIntervals(openingEntries(schedule, from, to));
 }
 
 /** Sorts intervals and merges the ones that overlap or touch. */

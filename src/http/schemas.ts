@@ -302,7 +302,7 @@ export const WebhookEndpointSchema = z
 
 export const WebhookEndpointCreatedSchema = WebhookEndpointSchema.extend({
   secret: z.string().openapi({
-    example: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw",
+    example: "whsec_EXAMPLE0nlyNotARealSecret0000000000=",
     description: "Signing secret. Shown once: store it to verify the webhook-signature header.",
   }),
 }).openapi("WebhookEndpointCreated");

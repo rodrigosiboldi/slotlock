@@ -1,11 +1,12 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
-import { and, asc, desc, eq, gt, like } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { streamSSE } from "hono/streaming";
 import type { AppEnv, Deps } from "../../context";
-import { events, serviceResources } from "../../db/schema";
+import { serviceResources } from "../../db/schema";
 import { problems } from "../../lib/problem";
 import { findAvailability, loadActiveService } from "../../services/availability";
 import { cancelBooking, createBooking, getBooking, listBookings, rescheduleBooking } from "../../services/bookings";
+import { decodeFeedCursor, encodeFeedCursor, eventsAfter, latestCursor } from "../../services/events";
 import { dispatchDue } from "../../services/webhooks";
 import { requireScope } from "../middleware";
 import {
@@ -23,7 +24,7 @@ import {
   problemSpec,
   RescheduleInputSchema,
 } from "../schemas";
-import { decodeCursor, encodeCursor, serializeBooking, serializeSlot } from "../serialize";
+import { decodeCursor, encodeCursor, isUuid, serializeBooking, serializeSlot } from "../serialize";
 
 const security = [{ ApiKey: [] }];
 const json = <T>(schema: T) => ({ "application/json": { schema } });
@@ -32,7 +33,6 @@ const json = <T>(schema: T) => ({ "application/json": { schema } });
 const STREAM_SECONDS = 240;
 const STREAM_POLL_MS = 1_000;
 const STREAM_HEARTBEAT_MS = 15_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface BookingCursor {
   s: string;
@@ -42,7 +42,8 @@ const isBookingCursor = (value: unknown): value is BookingCursor =>
   typeof value === "object" &&
   value !== null &&
   typeof (value as BookingCursor).s === "string" &&
-  typeof (value as BookingCursor).i === "string";
+  !Number.isNaN(Date.parse((value as BookingCursor).s)) &&
+  isUuid((value as BookingCursor).i);
 
 export function registerBookingRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): void {
   const afterWrite = () => deps.background(dispatchDue(deps));
@@ -136,33 +137,25 @@ export function registerBookingRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): voi
         stream.onAbort(() => {
           open = false;
         });
-        // Changes are read from the outbox (events table): UUIDv7 ids give a time-ordered cursor,
-        // and nothing on the booking path has to know that anyone is listening. A reconnecting
-        // client resumes from Last-Event-ID; a new one starts from "now".
-        const resumeFrom = c.req.header("last-event-id");
-        let cursor = resumeFrom && UUID.test(resumeFrom) ? resumeFrom : await newestEventId(deps, organizationId);
+        // Changes are read from the outbox (events table) in commit-safe order, so nothing on the
+        // booking path has to know that anyone is listening. A reconnecting client resumes from
+        // Last-Event-ID; a new one starts from "now".
+        let cursor = decodeFeedCursor(c.req.header("last-event-id")) ?? (await latestCursor(deps.db, organizationId));
 
         await stream.writeSSE({ event: "ready", data: JSON.stringify({ serviceId }), retry: 1000 });
         const deadline = Date.now() + STREAM_SECONDS * 1000;
         let lastWrite = Date.now();
         while (open && Date.now() < deadline) {
-          const fresh = await deps.db
-            .select({ id: events.id, type: events.type, data: events.data })
-            .from(events)
-            .where(
-              and(eq(events.organizationId, organizationId), gt(events.id, cursor), like(events.type, "booking.%")),
-            )
-            .orderBy(asc(events.id))
-            .limit(100);
+          const fresh = await eventsAfter(deps.db, organizationId, cursor, { limit: 100, typePrefix: "booking." });
           const touched = new Set<string>();
           for (const event of fresh) {
-            cursor = event.id;
+            cursor = event.cursor;
             const data = event.data as { resourceId?: string; previous?: { resourceId?: string } };
             for (const id of [data.resourceId, data.previous?.resourceId]) if (id && watched.has(id)) touched.add(id);
           }
           if (touched.size > 0) {
             await stream.writeSSE({
-              id: cursor,
+              id: cursor ? encodeFeedCursor(cursor) : "",
               event: "availability.changed",
               data: JSON.stringify({ resourceIds: [...touched] }),
             });
@@ -351,14 +344,4 @@ export function registerBookingRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): voi
       return c.json(serializeBooking(booking), 200);
     },
   );
-}
-
-async function newestEventId(deps: Pick<Deps, "db">, organizationId: string): Promise<string> {
-  const [newest] = await deps.db
-    .select({ id: events.id })
-    .from(events)
-    .where(eq(events.organizationId, organizationId))
-    .orderBy(desc(events.id))
-    .limit(1);
-  return newest?.id ?? "00000000-0000-0000-0000-000000000000";
 }

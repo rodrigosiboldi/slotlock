@@ -12,7 +12,7 @@ import { registerDemoRoutes } from "./http/routes/demo";
 import { registerSystemRoutes } from "./http/routes/system";
 import { registerWebhookRoutes } from "./http/routes/webhooks";
 import { PROBLEM_DOCS, problems } from "./lib/problem";
-import { resetDemo } from "./services/demo";
+import { ensureDemo, resetDemo } from "./services/demo";
 
 export const API_DESCRIPTION = `
 A multi-tenant booking API that **cannot double-book**.
@@ -132,15 +132,25 @@ export function createApp(deps: Deps) {
     ],
   }));
 
+  // The reference opens dark like the demo page, with the demo club's publishable key already set,
+  // so "Send request" works on the first click.
   app.get(
     "/docs",
-    Scalar({
+    Scalar(async () => ({
       url: "/openapi.json",
       pageTitle: "Slotlock API reference",
       theme: "deepSpace",
+      darkMode: true,
       defaultHttpClient: { targetKey: "js", clientKey: "fetch" },
-      hideClientButton: false,
-    }),
+      ...(deps.config.demoEnabled
+        ? {
+            authentication: {
+              preferredSecurityScheme: "ApiKey",
+              securitySchemes: { ApiKey: { token: (await ensureDemo(deps)).publishableKey } },
+            },
+          }
+        : {}),
+    })),
   );
 
   return app;

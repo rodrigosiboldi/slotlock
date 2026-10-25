@@ -43,6 +43,7 @@ export function fromMinutes(total: number): string {
 }
 
 export function formatWhen(iso: string, timeZone: string, lang: Lang): string {
+  if (Number.isNaN(new Date(iso).getTime())) return iso;
   return new Intl.DateTimeFormat(lang, {
     timeZone,
     weekday: "short",
@@ -56,6 +57,7 @@ export function formatWhen(iso: string, timeZone: string, lang: Lang): string {
 }
 
 export function formatClockTime(iso: string, lang: Lang): string {
+  if (Number.isNaN(new Date(iso).getTime())) return "";
   return new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(
     new Date(iso),
   );

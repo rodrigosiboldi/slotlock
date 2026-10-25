@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, like, sql } from "drizzle-orm";
 import type { Executor } from "../db/client";
 import { events, webhookDeliveries, webhookEndpoints } from "../db/schema";
 import { uuidv7 } from "../lib/crypto";
@@ -53,22 +53,71 @@ export async function recordEvent(
   return { eventId, deliveries: endpoints.length };
 }
 
-/** Events in creation order. UUIDv7 ids sort by time, so the id alone is a stable cursor. */
-export async function listEvents(
+/** Position in the event feed: the writing transaction, then the event id within it. */
+export interface FeedCursor {
+  tx: string;
+  id: string;
+}
+
+export interface FeedEvent extends DomainEvent {
+  cursor: FeedCursor;
+}
+
+/**
+ * Only events whose transaction is older than every transaction still running are visible.
+ * Ids are minted before commit, so without this a reader could see a later transaction's event,
+ * move its cursor past it, and never see the earlier one that commits a moment after.
+ */
+const settled = sql`${events.txId} < pg_snapshot_xmin(pg_current_snapshot())`;
+
+/** Events after a cursor, in commit-safe order. No event is ever skipped or returned twice. */
+export async function eventsAfter(
   db: Executor,
   organizationId: string,
-  page: { limit: number; after?: string | undefined; type?: string | undefined },
-): Promise<DomainEvent[]> {
-  return db
-    .select({ id: events.id, type: events.type, data: events.data, createdAt: events.createdAt })
+  after: FeedCursor | null,
+  options: { limit: number; type?: string | undefined; typePrefix?: string | undefined },
+): Promise<FeedEvent[]> {
+  const rows = await db
+    .select({
+      id: events.id,
+      type: events.type,
+      data: events.data,
+      createdAt: events.createdAt,
+      tx: sql<string>`${events.txId}::text`,
+    })
     .from(events)
     .where(
       and(
         eq(events.organizationId, organizationId),
-        page.after ? gt(events.id, page.after) : undefined,
-        page.type ? eq(events.type, page.type) : undefined,
+        settled,
+        after ? sql`(${events.txId}, ${events.id}) > (${after.tx}::xid8, ${after.id}::uuid)` : undefined,
+        options.type ? eq(events.type, options.type) : undefined,
+        options.typePrefix ? like(events.type, `${options.typePrefix}%`) : undefined,
       ),
     )
-    .orderBy(asc(events.id))
-    .limit(page.limit);
+    .orderBy(asc(events.txId), asc(events.id))
+    .limit(options.limit);
+  return rows.map(({ tx, ...event }) => ({ ...event, cursor: { tx, id: event.id } }));
+}
+
+/** Where a new reader should start to see only what happens from now on. */
+export async function latestCursor(db: Executor, organizationId: string): Promise<FeedCursor | null> {
+  const [row] = await db
+    .select({ id: events.id, tx: sql<string>`${events.txId}::text` })
+    .from(events)
+    .where(and(eq(events.organizationId, organizationId), settled))
+    .orderBy(desc(events.txId), desc(events.id))
+    .limit(1);
+  return row ? { tx: row.tx, id: row.id } : null;
+}
+
+export function encodeFeedCursor(cursor: FeedCursor): string {
+  return `${cursor.tx}.${cursor.id}`;
+}
+
+export function decodeFeedCursor(value: string | undefined | null): FeedCursor | null {
+  const match = value
+    ? /^(\d{1,20})\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(value)
+    : null;
+  return match?.[1] && match[2] ? { tx: match[1], id: match[2] } : null;
 }

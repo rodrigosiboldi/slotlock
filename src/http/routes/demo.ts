@@ -1,4 +1,5 @@
 import type { OpenAPIHono } from "@hono/zod-openapi";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import type { AppEnv, Deps } from "../../context";
 import { problems } from "../../lib/problem";
@@ -9,13 +10,22 @@ import { clientIp } from "../middleware";
 
 export const REPOSITORY_URL = "https://github.com/rodrigosiboldi/slotlock";
 const FEED_SECONDS = 240;
-const FEED_POLL_MS = 700;
+const FEED_POLL_MS = 1_000;
 
 /**
  * The public demo: the landing page, races, the webhook receiver and the live activity feed.
  * Everything else the page does goes through the real /v1 API with the club's publishable key.
  */
 export function registerDemoRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): void {
+  app.use(
+    "/demo/*",
+    bodyLimit({
+      maxSize: 64 * 1024,
+      onError: (c) =>
+        problemResponse(c, problems.unprocessable("body-too-large", "Body too large", "Keep requests under 64 KB.")),
+    }),
+  );
+
   // What the demo page needs to talk to the API as the demo club's public booking widget.
   app.get("/demo/config", async (c) => {
     const demo = await ensureDemo(deps);
@@ -57,6 +67,13 @@ export function registerDemoRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): void {
   });
 
   app.get("/demo/feed", async (c) => {
+    const decision = await hit(
+      deps.db,
+      POLICIES.demoFeeds,
+      clientIp(c, deps.config.trustProxy),
+      deps.clock.now().epochMilliseconds,
+    );
+    if (!decision.allowed) return problemResponse(c, problems.rateLimited(decision.resetSeconds));
     let cursor = await latestFeedCursor(deps);
     c.header("cache-control", "no-store");
     c.header("x-accel-buffering", "no");
@@ -69,12 +86,9 @@ export function registerDemoRoutes(app: OpenAPIHono<AppEnv>, deps: Deps): void {
       const deadline = Date.now() + FEED_SECONDS * 1000;
       let quietSince = Date.now();
       while (open && Date.now() < deadline) {
-        const items = await feedSince(deps, cursor);
-        for (const item of items) {
-          if (item.kind === "event") cursor = { ...cursor, event: item.id };
-          else cursor = { ...cursor, inbox: item.id };
-          await stream.writeSSE({ event: item.kind, data: JSON.stringify(item) });
-        }
+        const { items, next } = await feedSince(deps, cursor);
+        cursor = next;
+        for (const item of items) await stream.writeSSE({ event: item.kind, data: JSON.stringify(item) });
         if (items.length > 0) quietSince = Date.now();
         else if (Date.now() - quietSince > 15_000) {
           await stream.write(": heartbeat\n\n");

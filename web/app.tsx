@@ -2,6 +2,7 @@ import { ArrowRight, BookOpen } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createClient, type DemoConfig, loadConfig } from "@/api";
 import { GithubIcon } from "@/components/github-icon";
+import { SectionBoundary } from "@/components/section-boundary";
 import { Button } from "@/components/ui/button";
 import { detectLang, dictionaries, I18nContext, type Lang, useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -51,11 +52,19 @@ export function App() {
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-28 px-5 pb-28 sm:px-8">
           {config && client ? (
             <>
-              <RaceSection client={client} timezone={config.timezone} />
-              <CalendarSection client={client} config={config} />
-              <WebhooksSection config={config} />
+              <SectionBoundary name="race">
+                <RaceSection client={client} timezone={config.timezone} />
+              </SectionBoundary>
+              <SectionBoundary name="calendar">
+                <CalendarSection client={client} config={config} />
+              </SectionBoundary>
+              <SectionBoundary name="webhooks">
+                <WebhooksSection config={config} />
+              </SectionBoundary>
               <InternalsSection repositoryUrl={config.repositoryUrl} />
-              <UsageSection client={client} config={config} />
+              <SectionBoundary name="usage">
+                <UsageSection client={client} config={config} />
+              </SectionBoundary>
             </>
           ) : (
             <p className="text-muted-foreground">{failed ? "The demo API did not answer." : ""}</p>

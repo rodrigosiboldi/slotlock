@@ -1,9 +1,14 @@
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
 import type { Executor } from "../db/client";
 import { idempotencyKeys } from "../db/schema";
 
 /** Keys are honoured for 24 hours, like Stripe's. */
 export const IDEMPOTENCY_TTL_HOURS = 24;
+/**
+ * A claim that never completed (the process died mid-request) is abandoned after this long, so a
+ * retry can take it over instead of hearing "in progress" for a day. Requests are far shorter.
+ */
+export const IDEMPOTENCY_LEASE_SECONDS = 60;
 
 export type IdempotencyClaim =
   | { state: "claimed" }
@@ -21,14 +26,18 @@ export async function claimKey(
   input: { organizationId: string; key: string; fingerprint: string; now: Date },
 ): Promise<IdempotencyClaim> {
   const expiredBefore = new Date(input.now.getTime() - IDEMPOTENCY_TTL_HOURS * 3_600_000);
-  // An expired key behaves as if it had never been used.
+  const abandonedBefore = new Date(input.now.getTime() - IDEMPOTENCY_LEASE_SECONDS * 1000);
+  // An expired key, or a claim abandoned mid-request, behaves as if it had never been used.
   await db
     .delete(idempotencyKeys)
     .where(
       and(
         eq(idempotencyKeys.organizationId, input.organizationId),
         eq(idempotencyKeys.key, input.key),
-        lt(idempotencyKeys.createdAt, expiredBefore),
+        or(
+          lt(idempotencyKeys.createdAt, expiredBefore),
+          and(isNull(idempotencyKeys.completedAt), lt(idempotencyKeys.createdAt, abandonedBefore)),
+        ),
       ),
     );
   const inserted = await db

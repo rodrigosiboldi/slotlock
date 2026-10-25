@@ -197,6 +197,52 @@ describe("computeSlots", () => {
   });
 });
 
+describe("computeSlots and checkStart agree", () => {
+  const crossMidnight = [
+    { weekday: 1, opensAt: parseClock("18:00"), closesAt: parseClock("24:00") },
+    { weekday: 2, opensAt: parseClock("00:00"), closesAt: parseClock("02:00") },
+  ];
+  const allDay = hours("00:00", "24:00");
+
+  test("the grid never depends on the range asked for", () => {
+    const sched = schedule(allDay, { durationMinutes: 90, slotIntervalMinutes: 90 });
+    const tuesday = (from: string) =>
+      starts(computeSlots(sched, [], { from: date(from), to: date("2026-10-27") }, longAgo)).filter((s) =>
+        s.startsWith("2026-10-27"),
+      );
+    const asked = tuesday("2026-10-27");
+    expect(asked).toEqual(tuesday("2026-10-24"));
+    expect(asked[0]).toBe("2026-10-27T00:00:00+01:00");
+    expect(asked[1]).toBe("2026-10-27T01:30:00+01:00");
+    expect(asked).toHaveLength(16);
+  });
+
+  test("a slot that crosses midnight is offered and accepted", () => {
+    const sched = schedule(crossMidnight, { durationMinutes: 90, slotIntervalMinutes: 30 });
+    const monday = starts(computeSlots(sched, [], { from: date("2026-10-26"), to: date("2026-10-26") }, longAgo));
+    expect(monday.at(-1)).toBe("2026-10-26T23:30:00+01:00");
+    const at2300 = instant("2026-10-26T22:00:00Z");
+    expect(checkStart(sched, [], at2300, longAgo, { customerRules: true })).toBeNull();
+  });
+
+  test("every slot offered can be booked under customer rules", () => {
+    const schedules = [
+      schedule(crossMidnight, { durationMinutes: 90, slotIntervalMinutes: 30 }),
+      schedule(allDay, { durationMinutes: 90, slotIntervalMinutes: 90 }),
+      schedule(hours("00:00", "06:00", [7]), { durationMinutes: 60, slotIntervalMinutes: 30 }),
+      schedule(hours("08:00", "23:00"), { durationMinutes: 90, slotIntervalMinutes: 30, bufferAfterMinutes: 10 }),
+    ];
+    // A fortnight that contains the end of summer time (25 October 2026).
+    for (const sched of schedules) {
+      const slots = computeSlots(sched, [], { from: date("2026-10-19"), to: date("2026-11-01") }, longAgo);
+      expect(slots.length).toBeGreaterThan(0);
+      for (const slot of slots) {
+        expect(checkStart(sched, [], slot.start, longAgo, { customerRules: true })).toBeNull();
+      }
+    }
+  });
+});
+
 describe("checkStart", () => {
   const club = schedule(hours("08:00", "23:00"), { durationMinutes: 90, minNoticeMinutes: 60, maxAdvanceDays: 14 });
   const now = instant("2026-10-27T08:00:00Z"); // 09:00 in Madrid
