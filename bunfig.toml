@@ -1,0 +1,3 @@
+[test]
+# Booting PGlite and running the migrations takes a few seconds, more on a busy machine.
+timeout = 30000
