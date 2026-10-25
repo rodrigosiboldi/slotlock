@@ -191,6 +191,11 @@ and graceful shutdown.
 - **One clock.** Timestamps the dispatcher compares (`next_attempt_at`) come from the application clock,
   never mixed with the database's `now()`, so clock skew can't delay deliveries — and tests can travel in
   time.
+- **Bursts on cold instances.** 200 simultaneous requests can land on brand-new serverless instances.
+  Each one opens its first database connection before taking traffic, keeps a small pool (requests
+  share connections; only transactions hold one), and booking transactions retry only the errors that
+  guarantee nothing was committed (`53300`, `53200`, `40001`, `40P01`). Found the hard way: the first
+  race after a deploy used to return some 500s; verified clean on fresh deployments since.
 - **No Redis.** Rate limits and idempotency live in Postgres: one less moving part, shared by every
   serverless instance, transactional when it matters.
 - **A feed that can't skip events.** Event ids are minted before commit, so "everything after the last
